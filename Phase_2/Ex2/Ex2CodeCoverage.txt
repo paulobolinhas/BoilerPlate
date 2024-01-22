@@ -1,0 +1,718 @@
+/home/klee/klee_src/examples/trabalho2/treetable.c:
+    1|       |/*
+    2|       | * Collections-C
+    3|       | * Copyright (C) 2013-2015 Srđan Panić <srdja.panic@gmail.com>
+    4|       | *
+    5|       | * This file is part of Collections-C.
+    6|       | *
+    7|       | * Collections-C is free software: you can redistribute it and/or modify
+    8|       | * it under the terms of the GNU Lesser General Public License as published by
+    9|       | * the Free Software Foundation, either version 3 of the License, or
+   10|       | * (at your option) any later version.
+   11|       | *
+   12|       | * Collections-C is distributed in the hope that it will be useful,
+   13|       | * but WITHOUT ANY WARRANTY; without even the implied warranty of
+   14|       | * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+   15|       | * GNU Lesser General Public License for more details.
+   16|       | *
+   17|       | * You should have received a copy of the GNU Lesser General Public License
+   18|       | * along with Collections-C. If not, see <http://www.gnu.org/licenses/>.
+   19|       | */
+   20|       |
+   21|       |/* Tree operations are based on CLRS RB Tree. */
+   22|       |
+   23|       |#include "treetable.h"
+   24|       |#include <stdio.h>
+   25|       |
+   26|       |
+   27|     54|#define RB_BLACK 1
+   28|     28|#define RB_RED   0
+   29|       |
+   30|       |
+   31|       |struct treetable_s {
+   32|       |    RBNode *root;
+   33|       |    RBNode *sentinel;
+   34|       |    size_t  size;
+   35|       |
+   36|       |    int    (*cmp)        (const void *k1, const void *k2);
+   37|       |    void  *(*mem_alloc)  (size_t size);
+   38|       |    void  *(*mem_calloc) (size_t blocks, size_t size);
+   39|       |    void   (*mem_free)   (void *block);
+   40|       |};
+   41|       |
+   42|       |
+   43|       |static void rotate_left            (TreeTable *table, RBNode *n);
+   44|       |static void rotate_right           (TreeTable *table, RBNode *n);
+   45|       |static void rebalance_after_insert (TreeTable *table, RBNode *n);
+   46|       |static void tree_destroy           (TreeTable *table, RBNode *s);
+   47|       |
+   48|       |static INLINE RBNode *tree_min     (TreeTable const * const table, RBNode *n);
+   49|       |static INLINE RBNode *tree_max     (TreeTable const * const table, RBNode *n);
+   50|       |
+   51|       |static RBNode *get_tree_node_by_key(TreeTable const * const table, const void *key);
+   52|       |static RBNode *get_successor_node  (TreeTable const * const table, RBNode *x);
+   53|       |
+   54|     84|int cmp(void const *e1, void const *e2) {
+   55|     84|    int i = *((int *)e1);
+   56|     84|    int j = *((int *)e2);
+   57|       |
+   58|     84|    if (i < j)
+   59|     21|        return -1;
+   60|     63|    if (i == j)
+   61|     42|        return 0;
+   62|     21|    return 1;
+   63|     63|}
+   64|       |
+   65|       |
+   66|       |/**
+   67|       | * Initializes the TreehTableConf structs fields to default values.
+   68|       | *
+   69|       | * @param[in] conf the struct that is being initialized
+   70|       | */
+   71|       |void treetable_conf_init(TreeTableConf *conf)
+   72|     20|{
+   73|     20|    conf->mem_alloc  = malloc;
+   74|     20|    conf->mem_calloc = calloc;
+   75|     20|    conf->mem_free   = free;
+   76|     20|    conf->cmp        = cmp;
+   77|     20|}
+   78|       |
+   79|       |/**
+   80|       | * Creates a new TreeTable and returns a status code.
+   81|       | *
+   82|       | * @param[in] cmp the comparator used to order keys within the table
+   83|       | * @param[out] out Pointer to where the newly created TreeTable is to be stored
+   84|       | *
+   85|       | * @return CC_OK if the creation was successful, or CC_ERR_ALLOC if the memory
+   86|       | * allocation for the new TreeTable failed.
+   87|       | */
+   88|       |enum cc_stat treetable_new(TreeTable **tt)
+   89|     20|{
+   90|     20|    TreeTableConf conf;
+   91|     20|    treetable_conf_init(&conf);
+   92|     20|    return treetable_new_conf(&conf, tt);
+   93|     20|}
+   94|       |
+   95|       |/**
+   96|       | * Creates a new TreeTable based on the specified TreeTableConf struct and returns
+   97|       | * a status code.
+   98|       | *
+   99|       | * The table is allocated using the memory allocators specified in the TreeTableConf
+  100|       | * struct.
+  101|       | *
+  102|       | * @param[in] conf the TreeTableConf struct used to configure this new TreeTable
+  103|       | * @param[out] out Pointer to where the newly created TreeTable is stored
+  104|       | *
+  105|       | * @return CC_OK if the creation was successful, or CC_ERR_ALLOC if the memory
+  106|       | * allocation for the new TreeTable structure failed.
+  107|       | */
+  108|       |enum cc_stat treetable_new_conf(TreeTableConf const * const conf, TreeTable **tt)
+  109|     20|{
+  110|     20|    TreeTable *table = conf->mem_calloc(1, sizeof(TreeTable));
+  111|       |
+  112|     20|    if (!table)
+  113|      0|        return CC_ERR_ALLOC;
+  114|       |
+  115|     20|    RBNode *sentinel = conf->mem_calloc(1, sizeof(RBNode));
+  116|       |
+  117|     20|    if (!sentinel) {
+  118|      0|        conf->mem_free(table);
+  119|      0|        return CC_ERR_ALLOC;
+  120|      0|    }
+  121|       |
+  122|     20|    sentinel->color   = RB_BLACK;
+  123|       |
+  124|     20|    table->size       = 0;
+  125|     20|    table->cmp        = conf->cmp;
+  126|     20|    table->mem_alloc  = conf->mem_alloc;
+  127|     20|    table->mem_calloc = conf->mem_calloc;
+  128|     20|    table->mem_free   = conf->mem_free;
+  129|     20|    table->root       = sentinel;
+  130|     20|    table->sentinel   = sentinel;
+  131|       |
+  132|     20|    *tt = table;
+  133|     20|    return CC_OK;
+  134|     20|}
+  135|       |
+  136|       |/**
+  137|       | * Destroys the sub-tree specified by the root node n.
+  138|       | *
+  139|       | * @param[in] table TreeTable to be destroyed.
+  140|       | * @param[in] n root node of the sub tree that is being destroyed
+  141|       | */
+  142|       |static void tree_destroy(TreeTable *table, RBNode *n)
+  143|     88|{
+  144|     88|    if (n == table->sentinel)
+  145|     54|        return;
+  146|       |
+  147|     34|    tree_destroy(table, n->left);
+  148|     34|    tree_destroy(table, n->right);
+  149|       |
+  150|     34|    table->mem_free(n);
+  151|     34|}
+  152|       |
+  153|       |/**
+  154|       | * Destroys the specified TreeTable structure without destroying the the data
+  155|       | * it holds. In other words the keys and the values are not freed, only the
+  156|       | * table structure is.
+  157|       | *
+  158|       | * @param[in] table TreeTable to be destroyed.
+  159|       | */
+  160|       |void treetable_destroy(TreeTable *table)
+  161|     20|{
+  162|     20|    tree_destroy(table, table->root);
+  163|       |
+  164|     20|    table->mem_free(table->sentinel);
+  165|     20|    table->mem_free(table);
+  166|     20|}
+  167|       |
+  168|       |/**
+  169|       | * Gets a value associated with the specified key and sets the out
+  170|       | * parameter to it.
+  171|       | *
+  172|       | * @param[in] table the table from which the mapping is being returned
+  173|       | * @param[in] key   the key that is being looked up
+  174|       | * @param[out] out  Pointer to where the returned value is stored
+  175|       | *
+  176|       | * @return CC_OK if the key was found, or CC_ERR_KEY_NOT_FOUND if not.
+  177|       | */
+  178|       |enum cc_stat treetable_get(TreeTable const * const table, const void *key, void **out)
+  179|      7|{
+  180|      7|    RBNode *node = get_tree_node_by_key(table, key);
+  181|       |
+  182|      7|    if (!node)
+  183|      1|        return CC_ERR_KEY_NOT_FOUND;
+  184|       |
+  185|      6|    *out = node->value;
+  186|      6|    return CC_OK;
+  187|      7|}
+  188|       |
+  189|       |
+  190|       |/**
+  191|       | * Returns the first (lowest) key in the table and sets the out parameter
+  192|       | * to it.
+  193|       | *
+  194|       | * @param[in] table the table in which the lookup is performed
+  195|       | * @param[out] out  Pointer to where the returned key is stored
+  196|       | *
+  197|       | * @return CC_OK if the key was found, or CC_ERR_KEY_NOT_FOUND if not.
+  198|       | */
+  199|       |enum cc_stat treetable_get_first_key(TreeTable const * const table, void **out)
+  200|      9|{
+  201|      9|    RBNode *node = tree_min(table, table->root);
+  202|       |
+  203|      9|    if (node != table->sentinel) {
+  204|      6|        *out = node->key;
+  205|      6|        return CC_OK;
+  206|      6|    }
+  207|       |
+  208|      3|    return CC_ERR_KEY_NOT_FOUND;
+  209|      9|}
+  210|       |
+  211|       |/**
+  212|       | * Gets the immediate successor of the specified key and sets the out
+  213|       | * parameter to its value.
+  214|       | *
+  215|       | * @param[in] table the table into which the lookup is performed
+  216|       | * @param[in] key   the key whose successor is being returned
+  217|       | * @param[out] out  Pointer to where the returned key is stored
+  218|       | *
+  219|       | * @return CC_OK if the key was found, or CC_ERR_KEY_NOT_FOUND if not.
+  220|       | */
+  221|       |enum cc_stat treetable_get_greater_than(TreeTable const * const table, const void *key, void **out)
+  222|     26|{
+  223|     26|    RBNode *n = get_tree_node_by_key(table, key);
+  224|     26|    RBNode *s = get_successor_node(table, n);
+  225|       |    //sem isto, caso nao haja nó sucessor, ele retorna cc_ok
+  226|       |    //
+  227|     26|    if (s != table->sentinel && n && s) {
+                                              ^10  ^10
+  228|     10|        *out = s->key;
+  229|     10|        return CC_OK;
+  230|     10|    }
+  231|     16|    return CC_ERR_KEY_NOT_FOUND;
+  232|     26|}
+  233|       |
+  234|       |/**
+  235|       | * Returns the size of the specified TreeTable. Size of a TreeTable represents
+  236|       | * the number of key-value mappings within the table.
+  237|       | *
+  238|       | * @param[in] table the table whose size is being returned
+  239|       | *
+  240|       | * @return the size of the table
+  241|       | */
+  242|       |size_t treetable_size(TreeTable const * const table)
+  243|      0|{
+  244|      0|    return table->size;
+  245|      0|}
+  246|       |
+  247|       |/**
+  248|       | * Checks whether or not the TreeTable contains the specified key.
+  249|       | *
+  250|       | * @param[in] table the table into which the lookup is performed
+  251|       | * @param[in] key the key that is being looked up
+  252|       | *
+  253|       | * @return true if the table contains the key.
+  254|       | */
+  255|       |bool treetable_contains_key(TreeTable const * const table, const void *key)
+  256|      5|{
+  257|      5|    RBNode *node = get_tree_node_by_key(table, key);
+  258|       |
+  259|      5|    if (node)
+  260|      5|        return true;
+  261|       |
+  262|      0|    return false;
+  263|      5|}
+  264|       |
+  265|       |/**
+  266|       | * Checks whether or not the TreeTable contains the specified value.
+  267|       | *
+  268|       | * @param[in] table the table into which the lookup is performed
+  269|       | * @param[in] value the value that is being looked up
+  270|       | *
+  271|       | * @return number of occurrences of the specified value.
+  272|       | */
+  273|       |size_t treetable_contains_value(TreeTable const * const table, const void *value)
+  274|      0|{
+  275|      0|    RBNode *node = tree_min(table, table->root);
+  276|       |
+  277|      0|    size_t o = 0;
+  278|      0|    while (node != table->sentinel) {
+  279|      0|        if (node->value == value)
+  280|      0|            o++;
+  281|      0|        node = get_successor_node(table, node);
+  282|      0|    }
+  283|      0|    return o;
+  284|      0|}
+  285|       |
+  286|       |
+  287|       |/**
+  288|       | * Creates a new key-value mapping in the specified TreeTable. If the unique key
+  289|       | * is already mapped to a value in this table, that value is replaced with the
+  290|       | * new value. This operation may fail if the space allocation for the new entry
+  291|       | * fails.
+  292|       | *
+  293|       | * @param[in] table the table to which this new key-value mapping is being added
+  294|       | * @param[in] key a tree table key used to access the specified value
+  295|       | * @param[in] val a value that is being stored in the table
+  296|       | *
+  297|       | * @return CC_OK if the operation was successful, or CC_ERR_ALLOC if the memory
+  298|       | * allocation for the new element failed.
+  299|       | */
+  300|       |enum cc_stat treetable_add(TreeTable *table, void *key, void *val) // 6 Paths
+  301|     39|{
+  302|     39|    RBNode *y = table->sentinel;
+  303|     39|    RBNode *x = table->root;
+  304|       |
+  305|     39|    int cmp;
+  306|     53|    while (x != table->sentinel) {
+  307|     19|        cmp = table->cmp(key, x->key);
+  308|     19|        y   = x;
+  309|       |
+  310|     19|        if (cmp < 0) {
+  311|      7|            x = x->left;
+  312|     12|        } else if (cmp > 0) {
+  313|      7|            x = x->right;
+  314|      7|        } else {
+  315|      5|            x->value = val;
+  316|      5|            return CC_OK;
+  317|      5|        }
+  318|     19|    }
+  319|     34|    RBNode *n = table->mem_alloc(sizeof(RBNode));
+  320|       |
+  321|     34|    n->value  = val;
+  322|     34|    n->key    = key;
+  323|     34|    n->parent = y;
+  324|     34|    n->left   = table->sentinel;
+  325|     34|    n->right  = table->sentinel;
+  326|       |
+  327|     34|    table->size++;
+  328|       |
+  329|     34|    if (y == table->sentinel) {
+  330|     20|        table->root = n;
+  331|     20|        n->color    = RB_BLACK;
+  332|     20|    } else {
+  333|     14|        n->color = RB_RED;
+  334|     14|        if (table->cmp(key, y->key) < 0) {
+  335|      7|            y->left = n;
+  336|      7|        } else {
+  337|      7|            y->right = n;
+  338|      7|        }
+  339|     14|        rebalance_after_insert(table, n);
+  340|     14|    }
+  341|     34|    return CC_OK;
+  342|     39|}
+  343|       |
+  344|       |/**
+  345|       | * Rebalances the tale after an insert.
+  346|       | *
+  347|       | * @param[in] table TreeTable that is being rebalanced
+  348|       | * @param[in] z Node that was inserted
+  349|       | */
+  350|       |static void rebalance_after_insert(TreeTable *table, RBNode *z)
+  351|     14|{
+  352|     14|    RBNode *y;
+  353|       |
+  354|     14|    while (z->parent->color == RB_RED) {
+  355|      0|        if (z->parent == z->parent->parent->left) {
+  356|      0|            y = z->parent->parent->right;
+  357|      0|            if (y->color == RB_RED) {
+  358|      0|                z->parent->color         = RB_BLACK;
+  359|      0|                y->color                 = RB_BLACK;
+  360|      0|                z->parent->parent->color = RB_RED;
+  361|      0|                z = z->parent->parent;
+  362|      0|            } else {
+  363|      0|                if (z == z->parent->right) {
+  364|      0|                    z = z->parent;
+  365|      0|                    rotate_left(table, z);
+  366|      0|                }
+  367|      0|                z->parent->color         = RB_BLACK;
+  368|      0|                z->parent->parent->color = RB_RED;
+  369|      0|                rotate_right(table, z->parent->parent);
+  370|      0|            }
+  371|      0|        } else {
+  372|      0|            y = z->parent->parent->left;
+  373|      0|            if (y->color == RB_RED) {
+  374|      0|                z->parent->color         = RB_BLACK;
+  375|      0|                y->color                 = RB_BLACK;
+  376|      0|                z->parent->parent->color = RB_RED;
+  377|      0|                z = z->parent->parent;
+  378|      0|            } else {
+  379|      0|                if (z == z->parent->left) {
+  380|      0|                    z = z->parent;
+  381|      0|                    rotate_right(table, z);
+  382|      0|                }
+  383|      0|                z->parent->color         = RB_BLACK;
+  384|      0|                z->parent->parent->color = RB_RED;
+  385|      0|                rotate_left(table, z->parent->parent);
+  386|      0|            }
+  387|      0|        }
+  388|      0|    }
+  389|     14|    table->root->color = RB_BLACK;
+  390|     14|}
+  391|       |
+  392|       |static INLINE RBNode *tree_min(TreeTable const * const table, RBNode *n)
+  393|     14|{
+  394|     14|    RBNode *s = table->sentinel;
+  395|       |    
+  396|     15|    while (n != s && n->left != s) //se a arvore for vazia, n = sentinel, por isso n->left não existe
+                                   ^12
+  397|      1|        n = n->left;
+  398|       |
+  399|     14|    return n;
+  400|     14|}
+  401|       |
+  402|       |static INLINE RBNode *tree_max(TreeTable const * const table, RBNode *n)
+  403|      0|{
+  404|      0|    RBNode *s = table->sentinel;
+  405|       |
+  406|      0|    while (n != s && n->right != s)
+  407|      0|        n = n->right;
+  408|      0|    return n;
+  409|      0|}
+  410|       |
+  411|       |/**
+  412|       | * Performs a right rotation on the specified table's RB tree at root <code>
+  413|       | * x</code>
+  414|       | *
+  415|       | * @param[in] table the table on which this operation is performed
+  416|       | * @param[in] x the node around which this operation is performed
+  417|       | */
+  418|       |static void rotate_right(TreeTable *table, RBNode *x)
+  419|      0|{
+  420|      0|    RBNode *y = x->left;
+  421|       |
+  422|      0|    x->left = y->right;
+  423|       |
+  424|      0|    if (y->right != table->sentinel)
+  425|      0|        y->right->parent = x;
+  426|       |
+  427|      0|    y->parent = x->parent;
+  428|       |
+  429|      0|    if (x->parent == table->sentinel)
+  430|      0|        table->root = y;
+  431|      0|    else if (x == x->parent->right)
+  432|      0|        x->parent->right = y;
+  433|      0|    else
+  434|      0|        x->parent->left = y;
+  435|       |
+  436|      0|    y->right  = x;
+  437|      0|    x->parent = y;
+  438|      0|}
+  439|       |
+  440|       |/**
+  441|       | * Performs a left rotation on the specified table's RB tree at root <code>
+  442|       | * x</code>
+  443|       | *
+  444|       | * @param[in] table the table on which this operation is performed
+  445|       | * @param[in] x the node around which this operation is performed
+  446|       | */
+  447|       |static void rotate_left(TreeTable *table, RBNode *x)
+  448|      0|{
+  449|      0|    RBNode *y = x->right;
+  450|       |
+  451|      0|    x->right = y->left;
+  452|       |
+  453|      0|    if (y->left != table->sentinel)
+  454|      0|        y->left->parent = x;
+  455|       |
+  456|      0|    y->parent = x->parent;
+  457|       |
+  458|      0|    if (x->parent == table->sentinel)
+  459|      0|        table->root = y;
+  460|      0|    else if (x == x->parent->left)
+  461|      0|        x->parent->left = y;
+  462|      0|    else
+  463|      0|        x->parent->right = y;
+  464|       |
+  465|      0|    y->left   = x;
+  466|      0|    x->parent = y;
+  467|      0|}
+  468|       |
+  469|       |/**
+  470|       | * Returns a tree node associated with the specified key.
+  471|       | *
+  472|       | * @param[in] table the table on which this operation is performed
+  473|       | * @param[in] key the key being looked up
+  474|       | *
+  475|       | * @return tree node associated with the key
+  476|       | */
+  477|       |static RBNode *get_tree_node_by_key(TreeTable const * const table, const void *key)
+  478|     38|{
+  479|     38|    if (table->size == 0)
+  480|      1|        return NULL;
+  481|       |
+  482|     37|    RBNode *n = table->root;
+  483|     37|    RBNode *s = table->sentinel;
+  484|       |
+  485|     37|    int cmp;
+  486|     51|    do {
+  487|     51|        cmp = table->cmp(key, n->key);
+  488|       |
+  489|     51|        if (cmp < 0)
+  490|      7|            n = n->left;
+  491|     44|        else if (cmp > 0)
+  492|      7|            n = n->right;
+  493|     37|        else
+  494|     37|            return n;
+  495|     51|    } while (n != s && cmp != 0);
+                           ^14       ^14
+  496|       |
+  497|      0|    return NULL;
+  498|     37|}
+  499|       |
+  500|       |/**
+  501|       | * Returns a successor node of the node <code>x</code>
+  502|       | *
+  503|       | * @param[in] table the table on which this operation is performed
+  504|       | * @param[in] x the node whose successor is being returned
+  505|       | *
+  506|       | * @return successor node of x
+  507|       | */
+  508|       |static RBNode *get_successor_node(TreeTable const * const table, RBNode *x)
+  509|     26|{
+  510|     26|    if (x == NULL)
+  511|      0|        return NULL;
+  512|       |
+  513|     26|    if (x->right != table->sentinel)
+  514|      5|        return tree_min(table, x->right);
+  515|       |
+  516|     21|    RBNode *y = x->parent;
+  517|       |
+  518|     26|    while (y != table->sentinel && x == y->right) {
+                                                 ^10
+  519|      5|        x = y;
+  520|      5|        y = y->parent;
+  521|      5|    }
+  522|     21|    return y;
+  523|     26|}
+  524|       |
+  525|       |
+  526|       |
+  527|      0|static int height(TreeTable* t, RBNode* node) {
+  528|       |    
+  529|      0|    if (node == t->sentinel) 
+  530|      0|        return 0;
+  531|       |    
+  532|      0|    int leftHeight = height(t, node->left);
+  533|      0|    int rightHeight = height(t, node->right);
+  534|       |
+  535|      0|    return leftHeight > rightHeight? leftHeight + 1 : rightHeight + 1;
+  536|      0|}
+  537|       |
+  538|      0|int balanced(TreeTable* t) {
+  539|      0|    return abs(height(t, t->root->left) - height(t, t->root->right)) <= 1;
+  540|      0|}
+  541|       |
+  542|      0|static int isSorted(TreeTable* t, RBNode* node) {
+  543|       |
+  544|      0|    if (node == t->sentinel) {
+  545|      0|        printf("sentinel");
+  546|      0|        return 1;
+  547|      0|    }
+  548|       |    
+  549|      0|    RBNode* maxLeft = tree_max(t, node->left);
+  550|      0|    RBNode* minRight = tree_min(t, node->right);
+  551|       |
+  552|      0|    if (!(maxLeft != t->sentinel && node->key > maxLeft->key) &&
+  553|      0|        (minRight != t->sentinel &&  node->key < minRight->key)) {
+  554|      0|        return 0; 
+  555|      0|    }
+  556|       |    
+  557|      0|    return isSorted(t, node->left) && isSorted(t, node->right);
+  558|      0|}
+  559|       |
+  560|      0|int sorted(TreeTable* t) {
+  561|      0|    return isSorted(t, t->root);
+  562|      0|}
+
+/home/klee/klee_src/examples/trabalho2/Ex3ConcTestSuite/concreteTests.c:
+    1|       |#include <stdio.h>
+    2|       |#include <assert.h>
+    3|       |#include "../treetable.h"  
+    4|       |
+    5|     13|void get_greater_node_template(int key1, int key2) {
+    6|     13|    TreeTable *table;
+    7|     13|    treetable_new(&table);
+    8|       |
+    9|     13|    int keyArray[] = {key1, key2};
+   10|       |
+   11|     13|    char value1[10];
+   12|     13|    char value2[10];  
+   13|       |   
+   14|     13|    treetable_add(table, &key1, value1);
+   15|     13|    treetable_add(table, &key2, value2);
+   16|       |
+   17|     13|    void* outputKey;
+   18|       |    
+   19|     13|    int i = 0;
+   20|     39|    while (i < 2) {
+   21|     26|        int currentKey = keyArray[i];
+   22|     26|        int ccStat = treetable_get_greater_than(table, &currentKey, &outputKey);
+   23|     26|        if (ccStat == CC_OK) {
+   24|     10|            assert(*(int*)outputKey > currentKey);
+   25|     16|        } else {
+   26|     16|            assert(ccStat == CC_ERR_KEY_NOT_FOUND);
+   27|     16|        }
+   28|     26|        i++;
+   29|     26|    }
+   30|       |
+   31|     13|    treetable_destroy(table);
+   32|     13|}
+   33|       |
+   34|      3|void add_nodes_template(int key1, int key2) {
+   35|      3|    TreeTable *table;
+   36|      3|    treetable_new(&table);
+   37|       |
+   38|      3|    char value1[] = "aaa";
+   39|      3|    char value2[] = "bbb";  
+   40|       |   
+   41|      3|    treetable_add(table, &key1, value1);
+   42|      3|    treetable_add(table, &key2, value2);
+   43|       |
+   44|      3|    void* value;
+   45|      3|    if (key1 != key2 && treetable_contains_key(table, &key1)){
+                                      ^2
+   46|      2|        treetable_get(table, &key1, &value);
+   47|      2|        assert((char*) value == value1);
+   48|      2|    }
+   49|       |
+   50|      3|    if (treetable_contains_key(table, &key2)){
+   51|      3|        treetable_get(table, &key2, &value);
+   52|      3|        assert((char*) value == value2);
+   53|      3|    }
+   54|       |
+   55|      3|    treetable_destroy(table);
+   56|      3|}
+   57|       |
+   58|       |/*
+   59|       |Goal: Create a node and put it in the tree to obtain it later.
+   60|       |      Create a node, do not put it in the tree, and try to get it to obtain CC_ERR_KEY_NOT_FOUND.
+   61|       |*/
+   62|      1|void get_keys_template(int key1, int key2) {
+   63|      1|    TreeTable *table;
+   64|      1|    treetable_new(&table);
+   65|       |
+   66|      1|    char value1[] = "aaa";
+   67|      1|    char value2[] = "bbb";  
+   68|       |    
+   69|      1|    int ccStat;
+   70|      1|    void* valueObtained;
+   71|       |   
+   72|      1|    ccStat = treetable_get(table, &key2, &valueObtained);
+   73|      1|    assert(ccStat == CC_ERR_KEY_NOT_FOUND);
+   74|       |
+   75|      1|    treetable_add(table, &key1, value1);
+   76|       |
+   77|      1|    ccStat = treetable_get(table, &key1, &valueObtained);
+   78|      1|    assert(ccStat == CC_OK);
+   79|       |
+   80|      1|    treetable_destroy(table);
+   81|      1|}
+   82|       |
+   83|      3|void get_first_key(int key1, int key2) {
+   84|       |  
+   85|      3|    TreeTable *table;
+   86|      3|    treetable_new(&table);
+   87|       |
+   88|      3|    int keyArray[] = {key1, key2};
+   89|       |
+   90|      3|    char value1[10];
+   91|      3|    char value2[10];  
+   92|       |    
+   93|      3|    int ccStat;
+   94|      3|    void* outputKey;
+   95|       |   
+   96|      3|    ccStat = treetable_get_first_key(table, &outputKey);
+   97|      3|    assert(ccStat == CC_ERR_KEY_NOT_FOUND);
+   98|       |
+   99|      3|    treetable_add(table, &key1, value1);
+  100|      3|    ccStat = treetable_get_first_key(table, &outputKey);
+  101|      3|    assert(ccStat == CC_OK);
+  102|      3|    assert(*(int*)outputKey == key1);
+  103|       |    
+  104|       |
+  105|      3|    treetable_add(table, &key2, value2);
+  106|      3|    ccStat = treetable_get_first_key(table, &outputKey);
+  107|      3|    assert(ccStat == CC_OK);
+  108|      3|    if (key2 <= key1) {
+  109|      2|        assert(*(int*)outputKey == key2);
+  110|      2|    } else {
+  111|      1|        assert(*(int*)outputKey == key1);
+  112|      1|    }
+  113|       |    
+  114|      3|    treetable_destroy(table);
+  115|      3|}
+  116|       |
+  117|      1|int main() {
+  118|      1|    add_nodes_template(0, 0);
+  119|      1|    add_nodes_template(1, 0);
+  120|      1|    add_nodes_template(-1979711488, 0);
+  121|       |
+  122|      1|    get_keys_template(0, 0);
+  123|       |
+  124|      1|    get_greater_node_template(0, 0);
+  125|      1|    get_greater_node_template(-1414812757, -2147483648);
+  126|      1|    get_greater_node_template(-2147483647, -2147483648);
+  127|       |
+  128|      1|    get_greater_node_template(-2147483648, -2147483648);
+  129|      1|    get_greater_node_template(-1414812757, -1414812757);
+  130|      1|    get_greater_node_template(1, 0);
+  131|       |
+  132|      1|    get_greater_node_template(-1056964608, 0);
+  133|      1|    get_greater_node_template(-1414812757, 0);
+  134|      1|    get_greater_node_template(0, -2147483648);
+  135|       |
+  136|      1|    get_greater_node_template(0, -1414812757);
+  137|      1|    get_greater_node_template(-1979711488, 0);
+  138|      1|    get_greater_node_template(-2147483647, -2130706432);
+  139|       |
+  140|      1|    get_greater_node_template(-2147483648, -1414812757);
+  141|       |
+  142|      1|    get_first_key(0, 0);
+  143|      1|    get_first_key(1, 0);
+  144|      1|    get_first_key(-1979711488, 0);
+  145|       |
+  146|       |
+  147|      1|}
+

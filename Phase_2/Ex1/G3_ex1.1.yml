@@ -1,0 +1,81 @@
+# This YAML template is designed for capturing information about discovered
+# vulnerabilities.
+
+report:
+
+# infer bugs (infer run --pulse -- clang -c hashmap.c):
+
+/* BUG-1 */
+  - bug:
+      type: Null Dereference (Dereference of null pointer)
+      lineno: 76
+      class: TP
+      description: Pointer `map` last assigned on line 61 could be null and is dereferenced at line 76.
+      recommendation: Handle the case where memory allocation for map failed and exit the program.
+
+/* BUG-2 */
+  - bug: 
+      type: Memory Leak
+      lineno: 130
+      class: FP
+      description: Memory dynamically allocated at line 118 by call to `malloc`, is not freed after the last access at line 130.
+      recommendation: It's clearly a false positive because we simply cannot free 'entries' at this state. If we free all memory allocated objects used after memcpy func in line 132, 
+                      this will surpress the infer error but will affect the logic of the program, because these objects cannot be freed in cases where they are memcopied and equalized 
+                      to others, where other objects will be pointed to them. We can memcpy 'value' directly into 'entry->val' and don't use 'val', freeing it instead. 
+                      But then more errors will appear. Then we can solve the new error, entries error, with another memcpy, directly to 'field->entries' and then free 'entries' and finally, 
+                      with the entry->key error, either we get a false positive because we cannot free this object on the if value != null clause or another difficult solution to the memory leak.
+                      So we conclude it's a false positive. In order to surpress the infer error, the logic will be affected, so we have the 'fix', but commented. 
+
+/* BUG-3 */
+  - bug: 
+      type: Memory Leak
+      lineno: 156
+      class: FP
+      description: Memory dynamically allocated at line 155 by call to `malloc`, is not freed after the last access at line 156.
+                   We are allocating memory for val but not freeing it before returning from the function. But if we do this, the clang will
+                   say that we are using memory after it is freed. It's a false positive.
+      recommendation: To address and surpress both the memory leak warning and the "use of memory after it is freed" warning, we can allocate the memory 
+                      with malloc, copy the data into it with memcpy, and return it. Although we should make sure to properly free it after it's no longer needed, and we can't.
+                      So we conclude it's a false positive. In order to surpress the infer error, the logic will be affected, so we have the 'fix', but commented. 
+      
+/* BUG-4 */
+  - bug:
+      type: Null Dereference
+      lineno: 156
+      class: TP
+      description: Pointer `val` last assigned on line 155 could be null and is dereferenced by call to `memcpy()` at line 156.
+      recommendation: Handle the case where memory allocation for val failed and exit the program.
+      
+/* BUG-5 */
+  - bug:
+      type: Nullptr Dereference
+      lineno: 163
+      class: TP
+      description: Pulse found a potential null pointer dereference on line 64 indirectly during the call to `hashmap_new()`in call to `hashmap_new()`.
+      recommendation: Handle the case where memory allocation failed and exit the program. In this case, 'fields'.
+       
+# clang bugs (scan-build clang -c hashmap.c):
+
+/* BUG-6 */
+  - bug:
+      type: NullDereference
+      lineno: 72
+      class: TP
+      description: Access to field 'size' results in a dereference of a null pointer (loaded from variable 'field') - BUG FIXED with the previous fix, line 163, that already covers this (bug from the same variable).
+
+/* BUG-7 */
+  - bug:
+      type: MallocSizeof
+      lineno: 124
+      class: TP
+      description: Allocator sizeof operand mismatch. Result of 'malloc' is converted to a pointer of type 'char', which is incompatible with sizeof operand type 'char *'.
+      recommendation: Use strlen(key) + 1 instead of sizeof(key) to allocate enough memory to store the string pointed to by key, including the null-terminator. 
+
+/* BUG-8 */ 
+  - bug:
+      type: Memory Leak
+      lineno: 170
+      class: TP
+      description: Potential leak of memory pointed to by 'ret'.
+      recommendation: Free 'ret' before exiting the main function.
+

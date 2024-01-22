@@ -1,0 +1,27 @@
+# This YAML template is designed for capturing information about discovered
+# vulnerabilities.
+
+report:
+/* BUG-9 */
+  - bug:
+      type: NullDereference
+      lineno: 118
+      class: FN
+      description: Not detected by the tools. Pointer `entries` last assigned on line 118 could be null and possibly deferenced on next steps.
+      recommendation: Handle the case where memory allocation for entries failed and exit the program.
+
+/* BUG-10 */
+  - bug:
+      type: NullDereference
+      lineno: 131
+      class: FN
+      description: Not detected by the tools. Pointer `val` last assigned on line 131 could be null and possibly deferenced on next steps.
+      recommendation: Handle the case where memory allocation for val failed and exit the program.
+
+/* BUG-11 */
+  - bug:
+      type: NullDereference
+      lineno: 141
+      class: FN
+      description: Not detected by the tools. Pointer `field->entries` last assigned on line 141 could be null and possibly deferenced on next steps.
+      recommendation: Handle the case where memory allocation for field->entries failed and exit the program.
